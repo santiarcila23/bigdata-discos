@@ -1,0 +1,129 @@
+# ¿Cuánto viven los discos? — MapReduce, balanceo de carga y Spark Streaming
+# con los datos de Backblaze Drive Stats.
+#
+# Servicios permanentes:  docker compose up -d spark-master spark-worker kafka mongo
+# Trabajos (se ejecutan y terminan):
+#   docker compose run --rm descarga                 # baja los CSV de Backblaze
+#   docker compose run --rm spark preparar           # CSV -> Parquet
+#   docker compose run --rm spark parte_a            # MapReduce
+#   docker compose run --rm spark parte_b            # particiones y sesgo
+#   docker compose run --rm spark parte_c            # Structured Streaming (+ producer)
+#   docker compose run --rm python python parte_d.py # consultas MongoDB
+#   docker compose run --rm python python km.py      # Kaplan-Meier
+#   docker compose run --rm python python graficos.py
+name: discos
+
+x-spark-img: &spark-img
+  build: ./spark
+  image: discos-spark:latest
+
+x-python-img: &python-img
+  build: ./python
+  image: discos-python:latest
+
+services:
+  # ------------------------------------------------------------------ Spark
+  spark-master:
+    <<: *spark-img
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master",
+              "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    ports:
+      - "8090:8080"   # UI del master
+    restart: unless-stopped
+
+  spark-worker:
+    <<: *spark-img
+    user: root   # los executors escriben Parquet y checkpoints en el volumen /data
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077",
+              "--cores", "${SPARK_WORKER_CORES:-4}", "--memory", "${SPARK_WORKER_MEMORY:-2g}"]
+    volumes:
+      - datos:/data
+    depends_on: [spark-master]
+    restart: unless-stopped
+
+  # Contenedor para lanzar trabajos: docker compose run --rm spark <trabajo>
+  spark:
+    <<: *spark-img
+    user: root
+    entrypoint: ["bash", "/opt/jobs/submit.sh"]
+    command: ["parte_a"]
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      KAFKA: kafka:9092
+    volumes:
+      - datos:/data
+      - ./resultados:/resultados
+    profiles: ["trabajos"]
+
+  # ------------------------------------------------------------------ Kafka (modo KRaft, sin ZooKeeper)
+  kafka:
+    image: apache/kafka:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ MongoDB (Parte D)
+  mongo:
+    image: mongo:7.0
+    ports:
+      - "127.0.0.1:27019:27017"   # para MongoDB Compass
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ Python
+  # descarga de datos
+  descarga:
+    <<: *python-img
+    command: ["python", "-u", "descargar.py"]
+    environment:
+      DIAS: ${DIAS:-14}
+      ZIP_URL: ${ZIP_URL:-https://f001.backblazeb2.com/file/Backblaze-Hard-Drive-Data/data_Q2_2026.zip}
+    volumes:
+      - datos:/data
+      - ./resultados:/resultados
+    profiles: ["trabajos"]
+
+  # producer de Kafka (Parte C)
+  producer:
+    <<: *python-img
+    command: ["python", "-u", "producer.py"]
+    environment:
+      KAFKA: kafka:9092
+      TOPIC: discos
+      SEGUNDOS_POR_DIA: ${SEGUNDOS_POR_DIA:-10}
+      MODELOS: ${MODELOS:-}          # vacío = los 5 modelos con más discos
+      NUM_MODELOS: ${NUM_MODELOS:-5}
+      MUESTRA_PCT: ${MUESTRA_PCT:-100}
+      TARDIOS: ${TARDIOS:-50}
+    volumes:
+      - datos:/data
+    depends_on: [kafka]
+    profiles: ["trabajos"]
+
+  # consultas, Kaplan-Meier y gráficos: docker compose run --rm python python <script>.py
+  python:
+    <<: *python-img
+    command: ["python", "-u", "parte_d.py"]
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    volumes:
+      - datos:/data
+      - ./resultados:/resultados
+    profiles: ["trabajos"]
+
+volumes:
+  datos:
+  mongo_data:

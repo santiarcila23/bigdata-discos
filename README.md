@@ -77,7 +77,7 @@ docker compose run --rm python python km.py
 docker compose run --rm python python graficos.py
 ```
 
-El streaming se detiene solo cuando lleva 60 segundos sin recibir datos, y al final compara su resultado contra un cálculo por lotes.
+El streaming se detiene solo cuando lleva 90 segundos sin recibir datos, y al final compara su resultado contra un cálculo por lotes.
 
 ## Datos
 
@@ -113,8 +113,10 @@ Por qué hay sesgo: al repartir por clave, todas las filas de un modelo van a la
 - **Producer:** publica en el topic `discos` un día de datos cada 10 segundos (`SEGUNDOS_POR_DIA`). Para que Python aguante, filtra los 5 modelos con más discos (`NUM_MODELOS` o `MODELOS="m1,m2"`). `MUESTRA_PCT` toma un porcentaje de discos, elegido por serial para que sean los mismos todos los días.
 - **Structured Streaming:** lee Kafka, usa la fecha como tiempo del evento y agrupa por modelo en **ventanas de 7 días con watermark de 2 días**. Calcula días-disco, fallas y AFR por ventana. Cada micro-lote se muestra en consola y se guarda en MongoDB (upsert por modelo y ventana).
 - **Ventanas:** Spark alinea las ventanas de 7 días a los jueves. Con un desfase de 6 días (`VENTANA_DESFASE`) empiezan en miércoles, como el 1 de abril de 2026, y 14 días dan dos ventanas completas.
-- **Watermark de punta a punta:** el watermark avanza con la fecha más alta vista menos 2 días (`resultados/parte_c_progreso.csv`). Una ventana se cierra cuando el watermark pasa su fin. Para comprobarlo, el producer manda registros **tardíos** con la fecha del primer día cuando esa ventana ya cerró (`TARDIOS=50` por día, con seriales falsos `TARDIO-…`). Spark los descarta: la columna `descartadas_por_watermark` del progreso lo muestra. El contador no marca 50 por lote sino unos pocos grupos (13 en nuestra corrida), porque Spark agrega parcialmente cada partición de Kafka antes de descartar: cuenta grupos modelo × partición, no registros sueltos. La prueba definitiva es que la primera ventana no cambia.
+- **Watermark de punta a punta:** el watermark avanza con la fecha más alta vista menos 2 días (`resultados/parte_c_progreso.csv`). Una ventana se cierra cuando el watermark pasa su fin. Para comprobarlo, antes del último día el producer espera 40 s (`ESPERA_TARDIOS`) y manda el 14 de abril junto con 200 registros **tardíos** con fecha del 1 de abril (`TARDIOS`, seriales falsos `TARDIO-…`). Para entonces el watermark ya va en el 11 de abril y la primera ventana está cerrada, así que Spark los descarta: lo muestra la columna `descartadas_por_watermark` del último lote. El contador no marca 200 sino unos pocos grupos, porque Spark agrega parcialmente cada partición de Kafka antes de descartar: cuenta grupos modelo × partición, no registros sueltos. La prueba definitiva es que la primera ventana no cambia.
+- **Por qué los tardíos van al final:** en un lote Spark usa el watermark que calculó al terminar el lote **anterior**. Si el streaming va atrasado y los tardíos llegan junto con días recientes, la ventana todavía puede estar abierta y los acepta (nos pasó en un ensayo: entraron 10 por modelo). Enviarlos con el último día, después de una espera, garantiza que el watermark ya pasó. Y van mezclados con datos normales porque un lote que solo trae tardíos Spark lo informa como lote de 0 filas y no muestra el descarte.
 - **Verificación:** al terminar, el trabajo compara cada ventana del streaming con un `groupBy` por lotes sobre el Parquet (`parte_c_verificacion.csv`). Si los tardíos hubieran entrado, no coincidiría.
+- **Cuenta directa de los descartados:** además, lee todo el topic de Kafka y lo compara con lo que contó el streaming: Kafka tiene 2.565.171 registros y las ventanas suman 2.564.971 días-disco, así que se descartaron exactamente los 200 tardíos. (El contador `numRowsDroppedByWatermark` de Spark no siempre lo refleja: cuenta grupos parciales y, en algunos lotes, no se reporta.)
 
 ## Parte D: MongoDB
 

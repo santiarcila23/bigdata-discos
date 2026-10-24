@@ -8,7 +8,7 @@ evento = la fecha del registro) y calcula días-disco, fallas y AFR por ventana.
   muestra en consola.
 - El progreso de cada lote (watermark, filas descartadas por llegar tarde) va a
   resultados/parte_c_progreso.csv.
-- El trabajo termina solo cuando lleva FIN_SIN_DATOS_S segundos sin recibir datos (por defecto 60).
+- El trabajo termina solo cuando lleva FIN_SIN_DATOS_S segundos sin recibir datos (por defecto 90).
 
 Variables: KAFKA, TOPIC, VENTANA ("7 days"), VENTANA_DESFASE ("6 days"), WATERMARK ("2 days"),
 TRIGGER ("10 seconds").
@@ -31,7 +31,7 @@ VENTANA = os.environ.get("VENTANA", "7 days")
 DESFASE = os.environ.get("VENTANA_DESFASE", "6 days")
 WATERMARK = os.environ.get("WATERMARK", "2 days")
 TRIGGER = os.environ.get("TRIGGER", "10 seconds")
-FIN_SIN_DATOS = int(os.environ.get("FIN_SIN_DATOS_S", "60"))
+FIN_SIN_DATOS = int(os.environ.get("FIN_SIN_DATOS_S", "90"))
 CHECKPOINT = os.environ.get("CHECKPOINT", "/data/checkpoints/parte_c")
 FUENTE = os.environ.get("FUENTE", "kafka")          # "archivos" solo para pruebas locales
 GUARDAR_MONGO = os.environ.get("GUARDAR_MONGO", "1") == "1"
@@ -122,31 +122,44 @@ log("C", f"Streaming iniciado: topic '{TOPIC}', ventana {VENTANA}, watermark {WA
 os.makedirs(RES, exist_ok=True)
 ruta_prog = os.path.join(RES, "parte_c_progreso.csv")
 vistos, ultimo_dato, recibio = set(), time.time(), False
+
+
+def registrar(w, fp):
+    """Escribe y muestra los lotes nuevos de recentProgress. Devuelve True si alguno trajo filas."""
+    hubo = False
+    for p in consulta.recentProgress:
+        if p["batchId"] in vistos:
+            continue
+        vistos.add(p["batchId"])
+        filas = p.get("numInputRows", 0)
+        et = p.get("eventTime", {}) or {}
+        ops = p.get("stateOperators", [{}]) or [{}]
+        descartadas = sum(o.get("numRowsDroppedByWatermark", 0) for o in ops)
+        estado = sum(o.get("numRowsTotal", 0) for o in ops)
+        w.writerow([p["batchId"], filas, et.get("max", ""), et.get("watermark", ""), estado,
+                    descartadas, p.get("durationMs", {}).get("triggerExecution", "")])
+        fp.flush()
+        if filas:
+            hubo = True
+            log("C", f"lote {p['batchId']}: {filas:,} filas | evento máx {et.get('max', '-')} | "
+                     f"watermark {et.get('watermark', '-')} | descartadas por watermark: {descartadas}")
+    return hubo
+
+
 with open(ruta_prog, "w", newline="") as fp:
     w = csv.writer(fp)
     w.writerow(["lote", "filas_entrada", "max_evento", "watermark", "filas_estado",
                 "descartadas_por_watermark", "duracion_ms"])
     while consulta.isActive:
         consulta.awaitTermination(5)
-        for p in consulta.recentProgress:
-            if p["batchId"] in vistos:
-                continue
-            vistos.add(p["batchId"])
-            filas = p.get("numInputRows", 0)
-            et = p.get("eventTime", {}) or {}
-            ops = p.get("stateOperators", [{}]) or [{}]
-            descartadas = sum(o.get("numRowsDroppedByWatermark", 0) for o in ops)
-            estado = sum(o.get("numRowsTotal", 0) for o in ops)
-            w.writerow([p["batchId"], filas, et.get("max", ""), et.get("watermark", ""), estado,
-                        descartadas, p.get("durationMs", {}).get("triggerExecution", "")])
-            fp.flush()
-            if filas:
-                recibio, ultimo_dato = True, time.time()
-                log("C", f"lote {p['batchId']}: {filas:,} filas | evento máx {et.get('max', '-')} | "
-                         f"watermark {et.get('watermark', '-')} | descartadas por watermark: {descartadas}")
-        if recibio and time.time() - ultimo_dato > FIN_SIN_DATOS:
+        if registrar(w, fp):
+            recibio, ultimo_dato = True, time.time()
+        # no cortar mientras un lote está en curso (el último puede tardar más que el trigger)
+        ocupado = consulta.status.get("isTriggerActive", False) and consulta.status.get("isDataAvailable", False)
+        if recibio and not ocupado and time.time() - ultimo_dato > FIN_SIN_DATOS:
             log("C", f"{FIN_SIN_DATOS} s sin datos nuevos: se detiene el streaming")
             consulta.stop()
+    registrar(w, fp)   # lotes que terminaron justo antes de detener
 log("C", f"Progreso guardado en {ruta_prog}")
 
 # ------------------------------------------------------------------ verificación contra lotes
@@ -172,6 +185,20 @@ if os.environ.get("VERIFICAR", "1") == "1" and FUENTE == "kafka":
         guardar_csv("parte_c_verificacion.csv", ["inicio", "modelo", "dias_disco_lotes", "dias_disco_stream",
                                                  "fallas_lotes", "fallas_stream", "coincide"], filas)
         iguales = sum(1 for f in filas if f[-1] == "sí")
+        # prueba directa del watermark: todo lo que entró a Kafka contra lo que contó el streaming
+        try:
+            kafka = (spark.read.format("kafka").option("kafka.bootstrap.servers", KAFKA)
+                     .option("subscribe", TOPIC).option("startingOffsets", "earliest").load()
+                     .select(F.from_json(F.col("value").cast("string"), esquema).alias("e")).select("e.*"))
+            en_kafka = kafka.count()
+            tardios = kafka.where(F.col("serial").startswith("TARDIO")).count()
+            contados = sum(int(r["dd_stream"] or 0) for r in comp)
+            log("C", f"Kafka recibió {en_kafka:,} registros ({tardios} tardíos con fecha del primer día)")
+            log("C", f"El streaming contó {contados:,} días-disco en sus ventanas")
+            log("C", f"=> Descartados por llegar tarde: {en_kafka - contados:,} "
+                     f"({'todos los tardíos' if en_kafka - contados == tardios else 'revisar'})")
+        except Exception as e:  # noqa: BLE001
+            log("C", f"AVISO: no se pudo contar el topic ({type(e).__name__}: {e})")
         log("C", f"Verificación streaming vs lotes: {iguales} de {len(filas)} ventanas-modelo coinciden "
                  "(resultados/parte_c_verificacion.csv)")
         for f in filas:

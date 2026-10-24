@@ -107,7 +107,8 @@ services:
       MODELOS: ${MODELOS:-}          # vacío = los 5 modelos con más discos
       NUM_MODELOS: ${NUM_MODELOS:-5}
       MUESTRA_PCT: ${MUESTRA_PCT:-100}
-      TARDIOS: ${TARDIOS:-50}
+      TARDIOS: ${TARDIOS:-200}
+      ESPERA_TARDIOS: ${ESPERA_TARDIOS:-40}
     volumes:
       - datos:/data
     depends_on: [kafka]

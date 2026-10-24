@@ -44,7 +44,39 @@ spark.conf.set("spark.sql.shuffle.partitions", "8")
 if os.environ.get("REINICIAR", "1") == "1":
     shutil.rmtree(CHECKPOINT, ignore_errors=True)   # cada corrida empieza desde el inicio del topic
 
+def preparar_topic():
+    """Borra el topic de una corrida anterior (BORRAR_TOPIC=1) y espera a que el producer lo cree.
+
+    Spark falla si el topic no existe al arrancar, así que el streaming se lanza primero, queda
+    esperando aquí y empieza a leer en cuanto el producer crea el topic.
+    """
+    jvm = spark._jvm
+    props = jvm.java.util.Properties()
+    props.put("bootstrap.servers", KAFKA)
+    admin = jvm.org.apache.kafka.clients.admin.AdminClient.create(props)
+    try:
+        def existe():
+            return admin.listTopics().names().get().contains(TOPIC)
+
+        if os.environ.get("BORRAR_TOPIC", "1") == "1" and existe():
+            admin.deleteTopics(jvm.java.util.Collections.singletonList(TOPIC)).all().get()
+            while existe():
+                time.sleep(1)
+            log("C", f"Topic '{TOPIC}' de una corrida anterior borrado")
+        inicio = time.time()
+        while not existe():
+            if int(time.time() - inicio) % 15 == 0:
+                log("C", f"Esperando a que el producer cree el topic '{TOPIC}'... "
+                    "(en otra ventana: docker compose run --rm producer)")
+            time.sleep(1)
+        time.sleep(3)   # que las particiones del topic terminen de quedar disponibles
+        log("C", f"Topic '{TOPIC}' disponible")
+    finally:
+        admin.close()
+
+
 if FUENTE == "kafka":
+    preparar_topic()
     eventos = (spark.readStream.format("kafka")
                .option("kafka.bootstrap.servers", KAFKA)
                .option("subscribe", TOPIC)

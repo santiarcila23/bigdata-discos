@@ -1,0 +1,28 @@
+{
+  "usa_edad_smart9": true,
+  "discos_usados": 348175,
+  "fallas_usadas": 258,
+  "min_en_riesgo": 50,
+  "min_cobertura": 10,
+  "modelos": [
+    "WDC WUH722222ALE6L4",
+    "TOSHIBA MG08ACA16TA",
+    "TOSHIBA MG07ACA14TA",
+    "ST16000NM001G",
+    "WDC WUH721816ALE6L4",
+    "TOSHIBA MG10ACA20TE"
+  ],
+  "marcas": [
+    "Toshiba",
+    "Seagate",
+    "WDC",
+    "HGST"
+  ],
+  "comparacion": {
+    "grupo": "Todos los discos",
+    "desde_anios": 0.0,
+    "hasta_anios": 8.95,
+    "S_ingenuo": 0.9917,
+    "S_truncado": 0.8869
+  }
+}

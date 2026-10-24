@@ -1,0 +1,17 @@
+{
+  "filas_dias_disco": 4848207,
+  "dias": 14,
+  "modelos": 79,
+  "fallas": 259,
+  "afr_total_pct": 1.95,
+  "rdd_y_dataframe_coinciden": true,
+  "modelos_distintos": 0,
+  "segundos_rdd": 11.61,
+  "segundos_dataframe": 1.48,
+  "discos": 348619,
+  "fallaron": 259,
+  "censurados": 348360,
+  "observados_todos_los_dias": 342695,
+  "min_dias_disco_confiable": 10000,
+  "modelos_confiables": 27
+}

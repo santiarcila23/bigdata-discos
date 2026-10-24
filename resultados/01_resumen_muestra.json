@@ -1,0 +1,10 @@
+{
+  "filas": 4848207,
+  "discos": 348619,
+  "modelos": 79,
+  "fallas": 259,
+  "desde": "2026-04-01",
+  "hasta": "2026-04-14",
+  "dias": 14,
+  "filas_por_dia_promedio": 346300
+}

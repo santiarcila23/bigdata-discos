@@ -64,7 +64,7 @@ docker compose run --rm spark parte_a
 # 5. Parte B: particiones y sesgo (unos minutos)
 docker compose run --rm spark parte_b
 
-# 6. Parte C: en una ventana de PowerShell, el streaming...
+# 6. Parte C: en una ventana de PowerShell, el streaming (queda esperando el topic)...
 docker compose run --rm spark parte_c
 #    ...y en otra ventana, el producer
 docker compose run --rm producer
@@ -113,7 +113,7 @@ Por qué hay sesgo: al repartir por clave, todas las filas de un modelo van a la
 - **Producer:** publica en el topic `discos` un día de datos cada 10 segundos (`SEGUNDOS_POR_DIA`). Para que Python aguante, filtra los 5 modelos con más discos (`NUM_MODELOS` o `MODELOS="m1,m2"`). `MUESTRA_PCT` toma un porcentaje de discos, elegido por serial para que sean los mismos todos los días.
 - **Structured Streaming:** lee Kafka, usa la fecha como tiempo del evento y agrupa por modelo en **ventanas de 7 días con watermark de 2 días**. Calcula días-disco, fallas y AFR por ventana. Cada micro-lote se muestra en consola y se guarda en MongoDB (upsert por modelo y ventana).
 - **Ventanas:** Spark alinea las ventanas de 7 días a los jueves. Con un desfase de 6 días (`VENTANA_DESFASE`) empiezan en miércoles, como el 1 de abril de 2026, y 14 días dan dos ventanas completas.
-- **Watermark de punta a punta:** el watermark avanza con la fecha más alta vista menos 2 días (`resultados/parte_c_progreso.csv`). Una ventana se cierra cuando el watermark pasa su fin. Para comprobarlo, el producer manda registros **tardíos** con la fecha del primer día cuando esa ventana ya cerró (`TARDIOS=50` por día, con seriales falsos `TARDIO-…`). Spark los descarta: la columna `descartadas_por_watermark` del progreso lo muestra. Marca 1 por lote y no 50 porque Spark agrupa parcialmente antes de descartar, así que los registros de un mismo modelo y ventana cuentan como un grupo. La prueba definitiva es que la primera ventana no cambia.
+- **Watermark de punta a punta:** el watermark avanza con la fecha más alta vista menos 2 días (`resultados/parte_c_progreso.csv`). Una ventana se cierra cuando el watermark pasa su fin. Para comprobarlo, el producer manda registros **tardíos** con la fecha del primer día cuando esa ventana ya cerró (`TARDIOS=50` por día, con seriales falsos `TARDIO-…`). Spark los descarta: la columna `descartadas_por_watermark` del progreso lo muestra. El contador no marca 50 por lote sino unos pocos grupos (13 en nuestra corrida), porque Spark agrega parcialmente cada partición de Kafka antes de descartar: cuenta grupos modelo × partición, no registros sueltos. La prueba definitiva es que la primera ventana no cambia.
 - **Verificación:** al terminar, el trabajo compara cada ventana del streaming con un `groupBy` por lotes sobre el Parquet (`parte_c_verificacion.csv`). Si los tardíos hubieran entrado, no coincidiría.
 
 ## Parte D: MongoDB
@@ -136,9 +136,10 @@ Kaplan-Meier estima **S(t)**, la probabilidad de que un disco siga funcionando a
 - **Evento:** el disco falló en la ventana (`fallo = 1`).
 - **Censura por la derecha:** los discos que siguen vivos al final de la ventana cuentan como en riesgo hasta su última edad observada, sin sumar una falla. No se descartan ni se cuentan como fallas.
 - **Truncamiento por la izquierda:** cada disco entra a la ventana ya con una edad, por ejemplo 3 años. Solo vemos discos que sobrevivieron hasta esa edad, así que solo pueden contarse en riesgo desde ahí (`entry=` en lifelines). El ajuste **ingenuo**, que los pone en riesgo desde la edad 0, infla los "en riesgo" a edades bajas y sobrestima la supervivencia. `km_ingenuo_vs_truncado.png` muestra la diferencia con los datos propios.
-- A edades muy bajas hay muy pocos discos en riesgo, y una sola falla puede llevar la curva a 0. Por eso cada curva empieza en la edad desde la que hay al menos 50 discos en riesgo (`MIN_EN_RIESGO`): es la supervivencia condicionada a haber llegado a esa edad.
+- Con solo 14 días observados, cada disco está en riesgo apenas unos 14 días de edad. En las edades donde hay pocos discos, una falla con 1 o 2 discos en riesgo hundiría la curva a 0. Por eso cada curva se estima solo en el **tramo de edades más largo donde siempre hay al menos 10 discos en riesgo (`MIN_COBERTURA`) y toda falla ocurre con al menos 50 en riesgo (`MIN_EN_RIESGO`)**. Es la supervivencia condicionada a haber llegado al inicio del tramo, S(t | T > a0). `km_resumen.csv` informa el tramo (`curva_desde`, `curva_hasta`) y S(t) solo dentro de él.
+- **Por modelo, por marca y todos juntos:** Backblaze compra e instala cada modelo por lotes, así que las edades de un modelo vienen agrupadas y su tramo es corto. Al juntar modelos de una marca, o todos los discos, se cubren muchas más edades: `km_curvas_marcas.png` y la comparación ingenua vs truncada usan esos grupos.
 
-Salidas: `km_curvas.png`, `km_ingenuo_vs_truncado.png`, `km_resumen.csv` (S a 1, 3 y 5 años por modelo) y `km_datos.json`.
+Salidas: `km_curvas.png`, `km_curvas_marcas.png`, `km_ingenuo_vs_truncado.png`, `km_resumen.csv` (S a 1, 3 y 5 años por modelo) y `km_datos.json`.
 
 ## Gráficos
 
@@ -172,7 +173,7 @@ Salidas: `km_curvas.png`, `km_ingenuo_vs_truncado.png`, `km_resumen.csv` (S a 1,
 - **El streaming no recibe nada:** el producer debe correr en otra ventana mientras `parte_c` está activo. Los dos esperan a Kafka si todavía está arrancando.
 - **Poca memoria:** usar `DIAS=7` en la descarga, o `SPARK_WORKER_MEMORY=1g`.
 - **El producer va lento:** bajar `NUM_MODELOS` o `MUESTRA_PCT` (por ejemplo `MUESTRA_PCT=30`).
-- **Volver a empezar el streaming:** cada corrida de `parte_c` borra su checkpoint y lee el topic desde el inicio; los upserts en MongoDB evitan duplicados.
+- **Volver a empezar el streaming:** cada corrida de `parte_c` borra su checkpoint y el topic de la corrida anterior, y espera a que el producer lo cree de nuevo. Por eso `parte_c` se lanza **primero** y el producer después. Los upserts en MongoDB evitan duplicados.
 - **Borrar todo:** `docker compose down -v`.
 
 ## Fuentes

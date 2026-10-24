@@ -1,0 +1,80 @@
+{
+  "filas": 4848207,
+  "nucleos": 4,
+  "repeticiones": 3,
+  "tiempos": [
+    {
+      "particiones": 2,
+      "mediana_s": 9.328,
+      "min_s": 9.09,
+      "max_s": 11.677,
+      "resultado_igual": true
+    },
+    {
+      "particiones": 8,
+      "mediana_s": 8.067,
+      "min_s": 7.806,
+      "max_s": 8.877,
+      "resultado_igual": true
+    },
+    {
+      "particiones": 32,
+      "mediana_s": 10.005,
+      "min_s": 9.841,
+      "max_s": 11.774,
+      "resultado_igual": true
+    },
+    {
+      "particiones": 200,
+      "mediana_s": 22.644,
+      "min_s": 22.562,
+      "max_s": 30.6,
+      "resultado_igual": true
+    }
+  ],
+  "sesgo_particiones": 8,
+  "por_modelo": {
+    "max": 1111727,
+    "min": 18807,
+    "media": 606026,
+    "max_sobre_media": 1.83,
+    "particiones_vacias": 0
+  },
+  "sin_clave": {
+    "max": 606027,
+    "min": 606024,
+    "media": 606026,
+    "max_sobre_media": 1.0,
+    "particiones_vacias": 0
+  },
+  "particion_mas_cargada": 3,
+  "modelos_en_particion_mas_cargada": [
+    [
+      "WDC WUH722222ALE6L4",
+      638253
+    ],
+    [
+      "HGST HUH721212ALE604",
+      183704
+    ],
+    [
+      "ST8000NM0055",
+      182317
+    ],
+    [
+      "ST8000DM002",
+      95761
+    ],
+    [
+      "Seagate BarraCuda SSD ZA250CM10002",
+      6610
+    ]
+  ],
+  "concentracion_top": {
+    "1": 13.16,
+    "3": 35.33,
+    "5": 52.91,
+    "10": 75.61
+  },
+  "modelos": 79
+}
